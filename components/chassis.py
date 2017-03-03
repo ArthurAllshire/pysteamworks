@@ -54,6 +54,9 @@ class Chassis:
 
         self.input_enabled = True
 
+        # [left, right] in SI not encoder units
+        self.distance_offsets = [0.0, 0.0]
+
     def setup(self):
         """Run just after createObjects.
         Useful if you want to run something after just once after the
@@ -113,10 +116,15 @@ class Chassis:
         self.input_enabled = False
 
     def set_enc_pos(self, left=0, right=0):
-        self.motors[0].setPosition(int(left))
-        self.motors[2].setPosition(int(right))
+        self.distance_offsets = self.get_raw_wheel_distances()
+        self.distance_offsets[0] = self.distance_offsets[0] + left
+        self.distance_offsets[1] = self.distance_offsets[1] + right
 
     def get_wheel_distances(self):
+        return [self.motors[0].getPosition()/self.counts_per_meter-self.distance_offsets[0],
+                -self.motors[2].getPosition()/self.counts_per_meter-self.distance_offsets[1]]
+
+    def get_raw_wheel_distances(self):
         return [self.motors[0].getPosition()/self.counts_per_meter,
                 -self.motors[2].getPosition()/self.counts_per_meter]
 
