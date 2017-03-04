@@ -1,5 +1,6 @@
 import numpy as np
 from collections import deque
+from itertools import islice
 
 def m_dot(*args):
     ret = args[0]
@@ -24,9 +25,11 @@ class Kalman:
         self.history=deque(iterable=[[self.x_hat, self.P]], maxlen=history_len)
 
     def roll_back(self, timesteps):
-        self.history = self.history[:-timesteps]
-        self.x_hat = deque[-1][0]
-        self.P = deque[-1][1]
+        if timesteps == 0:
+            return
+        self.history = deque(islice(self.history, 0, -timesteps))
+        self.x_hat = self.history[-1][0]
+        self.P = self.history[-1][1]
 
     def predict(self, F, u, B):
         """

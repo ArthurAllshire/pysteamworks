@@ -3,6 +3,7 @@ import math
 import time
 
 from collections import deque
+from itertools import islice
 
 import magicbot
 
@@ -14,6 +15,8 @@ from utilities.kalman import Kalman
 
 class Localisor:
 
+    # absolute_positioning_variance_x = 0.01
+    # absolute_positioning_variance_y = 0.01
     absolute_positioning_variance_x = 0.01
     absolute_positioning_variance_y = 0.01
 
@@ -29,6 +32,11 @@ class Localisor:
     center_peg_x = 2.93
     side_peg_x = 2.54 + 0.75
     side_peg_y = 1.75 - 1.3
+
+    center_to_front_bumper = 0.49
+    sensors_to_front_bumper = 0.36
+
+    sensor_center_offset = center_to_front_bumper - sensors_to_front_bumper
 
     vision = Vision
     range_finder = RangeFinder
@@ -73,7 +81,6 @@ class Localisor:
         B = np.identity(3)
         # difference in the whees position form last timestep to this one
         deltas = history[-1]-history[-2]
-        # print("Deltas %s" % (str(deltas)))
 
         # difference in heading from last timestep to this one as measured by the odometry
         delta_theta = (-deltas[0]+deltas[1])/Chassis.wheelbase_width
@@ -84,14 +91,12 @@ class Localisor:
 
         # arclength of the path of the robot from last timestep to this one
         center_movement = (deltas[0]+deltas[1])/2
-        # print(center_movement)
 
         # average heading of the robot over the path since the last timestep
         average_heading = current_heading-(delta_theta/2)
 
         delta_x = center_movement*math.cos(current_heading)
         delta_y = center_movement*math.sin(current_heading)
-        # print("d_x %s, d_y %s" % (delta_x, delta_y))
 
         u = np.array([
             delta_x, delta_y, delta_theta]).reshape(-1, 1)
@@ -101,7 +106,6 @@ class Localisor:
 
         z = np.zeros(shape=(3, 1))
         z[2] = [history[-1][2]]
-        # print(z)
         H = np.zeros(shape=(3, 3))
         H[2][2] = 1
         self.filter.update(z, H)
@@ -118,11 +122,11 @@ class Localisor:
         # tower side angle
         theta_airship = 0
 
-        if -math.pi/3 < self.filter.measured_heading < math.pi/3:
+        if -math.pi/3 < measured_heading < math.pi/3:
             # calculate offsets based off of center tower
             p_x = Localisor.center_peg_x
             theta_airship = 0
-        elif self.filter.measured_heading > math.pi/3:
+        elif measured_heading > math.pi/3:
             # calculate offsets based off of right tower
             p_x = Localisor.side_peg_x
             p_y = -Localisor.side_peg_y
@@ -133,24 +137,20 @@ class Localisor:
             p_y = -Localisor.side_peg_y
             theta_airship = -math.pi/3
 
-        # the angle made between the line perpendicular to the airship and
-        # the angle towards the peg
-        theta_peg = vision_angle - (theta_airship-measured_heading)
+        # various angles that crop up from the maths
+        theta_peg_from_y_axis = math.pi/2 - measured_heading - vision_angle
+        theta_peg_from_x_axis = math.pi/2 - theta_peg_from_y_axis
+        theta_alpha = math.pi - theta_peg_from_x_axis
+        delta_d = measured_range * math.sin(math.pi - theta_alpha - vision_angle) / math.sin(theta_alpha)
 
-        # straight line range from the robot to the nearest point on the airship side
-        range_airship = measured_range*math.sin((math.pi/2)-(theta_airship-measured_heading))
+        # calculate the x and y components of the sensor offset for our current heading
+        sensor_x_offset = self.sensor_center_offset*math.sin(math.pi/2 - measured_heading)
+        sensor_y_offset = self.sensor_center_offset*math.sin(measured_heading)
 
-        # straight line distance to the base of the peg
-        range_peg = range_airship/math.sin((math.pi/2)-theta_peg)
+        delta_x = -(delta_d * math.sin(theta_peg_from_y_axis)) - sensor_x_offset
+        delta_y = -(delta_d * math.sin(theta_peg_from_x_axis)) - sensor_y_offset
 
-        theta_peg_x_axis = math.pi - measured_heading - vision_angle
-
-        theta_peg_y_axis = math.pi/2 - theta_peg_x_axis
-
-        delta_x = range_peg/math.sin(theta_peg_y_axis)
-        delta_y = range_peg/math.sin(theta_peg_x_axis)
-
-        # field centered x and y
+        # field based x and y
         field_x = delta_x + p_x
         field_y = delta_y + p_y
 
@@ -177,12 +177,16 @@ class Localisor:
             return
         self.predict(self.history)
         self.gyro_update(self.history)
-        if False:#self.last_vision_time != self.vision.time and self.vision.num_targets > 1:
-            timesteps_since_vision = int((time.monotonic() - self.vision.time())*1/50)
-            self.filter.roll_back(timesteps_since_vision)
-            self.absolute_update(self, history[:-timesteps_since_vision])
+        if self.last_vision_time != self.vision.time and self.vision.num_targets > 1:
+            timesteps_since_vision = int((time.monotonic() - self.vision.time)*1/50)
+            if timesteps_since_vision > 0:
+                self.filter.roll_back(timesteps_since_vision)
+                self.absolute_update(deque(islice(self.history, 0, -timesteps_since_vision)))
+            else:
+                self.absolute_update(self.history)
             # perform update, then re predict our position forward
-            for i in range(timesteps_since_vision-1, -1, -1):
-                self.predict(self.history[:i])
-                self.gyro_update(self.history[:i])
-            self.last_vision_time = self.vision.time
+            if timesteps_since_vision > 0:
+                for i in range(timesteps_since_vision-1, -1, -1):
+                    self.predict(deque(islice(self.history, 0, i)))
+                    self.gyro_update(deque(islice(self.history, 0, i)))
+                self.last_vision_time = self.vision.time
